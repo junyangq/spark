@@ -78,9 +78,9 @@ NULL
 
 #' S4 class that represents an ALSModel
 #'
-#' @param jobj a Java object reference to the backing Scala ALSModelWrapper
+#' @param jobj a Java object reference to the backing Scala ALSWrapper
 #' @export
-#' @note KMeansModel since 2.0.0
+#' @note ALSModel since 2.1.0
 setClass("ALSModel", representation(jobj = "jobj"))
 
 
@@ -653,6 +653,7 @@ setMethod("predict", signature(object = "AFTSurvivalRegressionModel"),
 #'                Note that operator '.' is not supported currently
 #' @return \code{spark.als} returns a fitted ALS model
 #' @rdname spark.als
+#' @name spark.als
 #' @export
 #' @examples
 #' \dontrun{
@@ -674,9 +675,9 @@ setMethod("predict", signature(object = "AFTSurvivalRegressionModel"),
 #' }
 #' @note spark.als since 2.1.0
 setMethod("spark.als", signature(data = "SparkDataFrame", formula = "formula"),
-function(data, formula, ...) {
-    formula <- paste(deparse(formula), collapse = "")
-jobj <- callJStatic("org.apache.spark.ml.r.ALSModelWrapper",
-"fit", formula, data@sdf)
-return(new("ALSModelWrapper", jobj = jobj))
-})
+          function(data, formula, ...) {
+            formula <- paste(deparse(formula), collapse = "")
+            jobj <- callJStatic("org.apache.spark.ml.r.ALSWrapper",
+                                "fit", formula, data@sdf)
+            return(new("ALSModel", jobj = jobj))
+          })

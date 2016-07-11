@@ -1282,3 +1282,7 @@ setGeneric("spark.survreg", function(data, formula, ...) { standardGeneric("spar
 #' @rdname write.ml
 #' @export
 setGeneric("write.ml", function(object, path, ...) { standardGeneric("write.ml") })
+
+#' @rdname spark.als
+#' @export
+setGeneric("spark.als", function(data, formula, ...) { standardGeneric("spark.als") })

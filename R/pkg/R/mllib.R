@@ -674,6 +674,7 @@ setMethod("predict", signature(object = "AFTSurvivalRegressionModel"),
 
 #' @return \code{spark.als} returns a fitted ALS model
 #' @rdname spark.als
+#' @aliases spark.als,SparkDataFrame
 #' @name spark.als
 #' @export
 #' @examples

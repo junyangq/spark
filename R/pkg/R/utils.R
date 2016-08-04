@@ -689,3 +689,14 @@ getSparkContext <- function() {
   sc <- get(".sparkRjsc", envir = .sparkREnv)
   sc
 }
+
+is_master_local <- function(master) {
+  grepl("^local(\\[([0-9]+|\\*)\\])?$", master, perl = TRUE)
+}
+
+getRemoteMasterInfo <- function(master) {
+  hostPort <- sub("spark://", "", master)
+  host <- sub(":.*", "", hostPort)
+  port <- sub(".*:", "", hostPort)
+  list(host = host, port = port)
+}

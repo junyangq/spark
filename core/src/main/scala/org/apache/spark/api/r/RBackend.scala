@@ -111,35 +111,40 @@ private[spark] object RBackend extends Logging {
       val serverSocket = new ServerSocket(0, 1, InetAddress.getByName("localhost"))
       val listenPort = serverSocket.getLocalPort()
 
-      // tell the R process via temporary file
-      val path = args(0)
-      val f = new File(path + ".tmp")
-      val dos = new DataOutputStream(new FileOutputStream(f))
-      dos.writeInt(boundPort)
-      dos.writeInt(listenPort)
-      SerDe.writeString(dos, RUtils.rPackages.getOrElse(""))
-      dos.close()
-      f.renameTo(new File(path))
+      // scalastyle:off println
+      println("boundPort: " + boundPort.toString)
+      println("listenPort: " + listenPort.toString)
+      // scalastyle:on println
 
+//      // tell the R process via temporary file
+//      val path = args(0)
+//      val f = new File(path + ".tmp")
+//      val dos = new DataOutputStream(new FileOutputStream(f))
+//      dos.writeInt(boundPort)
+//      dos.writeInt(listenPort)
+//      SerDe.writeString(dos, RUtils.rPackages.getOrElse(""))
+//      dos.close()
+//      f.renameTo(new File(path))
+//
       // wait for the end of stdin, then exit
-      new Thread("wait for socket to close") {
-        setDaemon(true)
-        override def run(): Unit = {
-          // any un-catched exception will also shutdown JVM
-          val buf = new Array[Byte](1024)
-          // shutdown JVM if R does not connect back in 10 seconds
-          serverSocket.setSoTimeout(10000)
-          try {
-            val inSocket = serverSocket.accept()
-            serverSocket.close()
-            // wait for the end of socket, closed if R process die
-            inSocket.getInputStream().read(buf)
-          } finally {
-            sparkRBackend.close()
-            System.exit(0)
-          }
-        }
-      }.start()
+//      new Thread("wait for socket to close") {
+//        setDaemon(true)
+//        override def run(): Unit = {
+//          // any un-catched exception will also shutdown JVM
+//          val buf = new Array[Byte](1024)
+//          // shutdown JVM if R does not connect back in 10 seconds
+//          serverSocket.setSoTimeout(10000)
+//          try {
+//            val inSocket = serverSocket.accept()
+//            serverSocket.close()
+//            // wait for the end of socket, closed if R process die
+//            inSocket.getInputStream().read(buf)
+//          } finally {
+//            sparkRBackend.close()
+//            System.exit(0)
+//          }
+//        }
+//      }.start()
 
       sparkRBackend.run()
     } catch {

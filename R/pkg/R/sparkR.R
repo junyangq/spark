@@ -161,50 +161,65 @@ sparkR.sparkContext <- function(
     }
     backendPort <- existingPort
   } else {
-    path <- tempfile(pattern = "backend_port")
-    submitOps <- getClientModeSparkSubmitOpts(
+    
+    if (!nzchar(master) || is_master_local(master)) {
+      path <- tempfile(pattern = "backend_port")
+      submitOps <- getClientModeSparkSubmitOpts(
         Sys.getenv("SPARKR_SUBMIT_ARGS", "sparkr-shell"),
         sparkEnvirMap)
-    launchBackend(
+      launchBackend(
         args = path,
         sparkHome = sparkHome,
         jars = jars,
         sparkSubmitOpts = submitOps,
         packages = packages)
-    # wait atmost 100 seconds for JVM to launch
-    wait <- 0.1
-    for (i in 1:25) {
-      Sys.sleep(wait)
-      if (file.exists(path)) {
-        break
+      # wait atmost 100 seconds for JVM to launch
+      wait <- 0.1
+      for (i in 1:25) {
+        Sys.sleep(wait)
+        if (file.exists(path)) {
+          break
+        }
+        wait <- wait * 1.25
       }
-      wait <- wait * 1.25
+      if (!file.exists(path)) {
+        stop("JVM is not ready after 10 seconds")
+      }
+      f <- file(path, open = "rb")
+      backendPort <- readInt(f)
+      monitorPort <- readInt(f)
+      rLibPath <- readString(f)
+      close(f)
+      file.remove(path)
+      if (length(backendPort) == 0 || backendPort == 0 ||
+          length(monitorPort) == 0 || monitorPort == 0 ||
+          length(rLibPath) != 1) {
+        stop("JVM failed to launch")
+      }
+      host <- "localhost"
+
+    } else {  # TODO: check if this is a valid remote address
+      
+      masterInfo <- getRemoteMasterInfo(master)
+      print(masterInfo)
+      host <- masterInfo$host
+      backendPort <- masterInfo$port
+      monitorPort <- masterInfo$port
+      
     }
-    if (!file.exists(path)) {
-      stop("JVM is not ready after 10 seconds")
-    }
-    f <- file(path, open = "rb")
-    backendPort <- readInt(f)
-    monitorPort <- readInt(f)
-    rLibPath <- readString(f)
-    close(f)
-    file.remove(path)
-    if (length(backendPort) == 0 || backendPort == 0 ||
-        length(monitorPort) == 0 || monitorPort == 0 ||
-        length(rLibPath) != 1) {
-      stop("JVM failed to launch")
-    }
-    assign(".monitorConn", socketConnection(port = monitorPort), envir = .sparkREnv)
+    
+    # print(paste("monitor:", monitorPort))
+    assign(".monitorConn", socketConnection(host = host, port = monitorPort), envir = .sparkREnv)
     assign(".backendLaunched", 1, envir = .sparkREnv)
-    if (rLibPath != "") {
-      assign(".libPath", rLibPath, envir = .sparkREnv)
-      .libPaths(c(rLibPath, .libPaths()))
-    }
+#    if (rLibPath != "") {
+#      assign(".libPath", rLibPath, envir = .sparkREnv)
+#      .libPaths(c(rLibPath, .libPaths()))
+#    }
   }
 
   .sparkREnv$backendPort <- backendPort
   tryCatch({
-    connectBackend("localhost", backendPort)
+    connectBackend(host, backendPort)
   },
   error = function(err) {
     stop("Failed to connect JVM\n")
@@ -232,6 +247,8 @@ sparkR.sparkContext <- function(
   # Set the start time to identify jobjs
   # Seconds resolution is good enough for this purpose, so use ints
   assign(".scStartTime", as.integer(Sys.time()), envir = .sparkREnv)
+
+  master = ""
 
   assign(
     ".sparkRjsc",

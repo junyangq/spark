@@ -67,7 +67,9 @@ private[spark] class RBackend {
       }
     })
 
-    channelFuture = bootstrap.bind(new InetSocketAddress("localhost", 0))
+    // accept any IPv4 address
+    val backendPort = conf.getInt("spark.r.backendPort", 8000)
+    channelFuture = bootstrap.bind(new InetSocketAddress("0.0.0.0", backendPort))
     channelFuture.syncUninterruptibly()
     channelFuture.channel().localAddress().asInstanceOf[InetSocketAddress].getPort()
   }
@@ -106,10 +108,13 @@ private[spark] object RBackend extends Logging {
 
     val sparkRBackend = new RBackend()
     try {
-      // bind to random port
+      // bind to port configured by spark.r.backendPort, with default 8000
       val boundPort = sparkRBackend.init()
-      val serverSocket = new ServerSocket(0, 1, InetAddress.getByName("localhost"))
-      val listenPort = serverSocket.getLocalPort()
+//      val serverSocket = new ServerSocket(0, 1, InetAddress.getByName("localhost"))
+      val conf = new SparkConf()
+      val listenPort = conf.getInt("spark.r.monitorPort", 8001)
+      val serverSocket = new ServerSocket(listenPort, 1)
+//      val listenPort = serverSocket.getLocalPort()
 
       // scalastyle:off println
       println("boundPort: " + boundPort.toString)
@@ -117,35 +122,34 @@ private[spark] object RBackend extends Logging {
       // scalastyle:on println
 
 //      // tell the R process via temporary file
-//      val path = args(0)
-//      val f = new File(path + ".tmp")
-//      val dos = new DataOutputStream(new FileOutputStream(f))
-//      dos.writeInt(boundPort)
-//      dos.writeInt(listenPort)
-//      SerDe.writeString(dos, RUtils.rPackages.getOrElse(""))
-//      dos.close()
-//      f.renameTo(new File(path))
-//
-      // wait for the end of stdin, then exit
-//      new Thread("wait for socket to close") {
-//        setDaemon(true)
-//        override def run(): Unit = {
-//          // any un-catched exception will also shutdown JVM
-//          val buf = new Array[Byte](1024)
-//          // shutdown JVM if R does not connect back in 10 seconds
-//          serverSocket.setSoTimeout(10000)
-//          try {
-//            val inSocket = serverSocket.accept()
-//            serverSocket.close()
-//            // wait for the end of socket, closed if R process die
-//            inSocket.getInputStream().read(buf)
-//          } finally {
-//            sparkRBackend.close()
-//            System.exit(0)
-//          }
-//        }
-//      }.start()
+      val path = args(0)
+      val f = new File(path + ".tmp")
+      val dos = new DataOutputStream(new FileOutputStream(f))
+      dos.writeInt(boundPort)
+      dos.writeInt(listenPort)
+      SerDe.writeString(dos, RUtils.rPackages.getOrElse(""))
+      dos.close()
+      f.renameTo(new File(path))
 
+//       wait for the end of stdin, then exit
+      new Thread("wait for socket to close") {
+        setDaemon(true)
+        override def run(): Unit = {
+          // any un-catched exception will also shutdown JVM
+          val buf = new Array[Byte](1024)
+          // shutdown JVM if R does not connect back in 10 seconds
+          serverSocket.setSoTimeout(10000)
+          try {
+            val inSocket = serverSocket.accept()
+            serverSocket.close()
+            // wait for the end of socket, closed if R process die
+            inSocket.getInputStream().read(buf)
+          } finally {
+            sparkRBackend.close()
+            System.exit(0)
+          }
+        }
+      }.start()
       sparkRBackend.run()
     } catch {
       case e: IOException =>

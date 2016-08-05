@@ -161,7 +161,7 @@ sparkR.sparkContext <- function(
     }
     backendPort <- existingPort
   } else {
-    
+
     if (!nzchar(master) || is_master_local(master)) {
       path <- tempfile(pattern = "backend_port")
       submitOps <- getClientModeSparkSubmitOpts(
@@ -196,25 +196,23 @@ sparkR.sparkContext <- function(
           length(rLibPath) != 1) {
         stop("JVM failed to launch")
       }
-      host <- "localhost"
-
-    } else {  # TODO: check if this is a valid remote address
-      
-      masterInfo <- getRemoteMasterInfo(master)
-      print(masterInfo)
-      host <- masterInfo$host
-      backendPort <- masterInfo$port
-      monitorPort <- masterInfo$port
-      
+      assign(".monitorConn", socketConnection(port = monitorPort), envir = .sparkREnv)
+      assign(".backendLaunched", 1, envir = .sparkREnv)
+      if (rLibPath != "") {
+        assign(".libPath", rLibPath, envir = .sparkREnv)
+        .libPaths(c(rLibPath, .libPaths()))
+      }
+    } else {  # TODO: check if `master` is valid
+      if (!is.null(sparkEnvirMap[["backend.port"]])) {
+        backendPort <- sparkEnvirMap[["backend.port"]]
+      } else {
+        backendPort <- "8000"
+      }
+      host <- getRemoteMasterInfo(master)$host
+      assign(".monitorConn", socketConnection(host, port = "8001"), envir = .sparkREnv)
+      assign(".backendLaunched", 1, envir = .sparkREnv)
+      master <- ""   # have connected to RBackend, go local
     }
-    
-    # print(paste("monitor:", monitorPort))
-    assign(".monitorConn", socketConnection(host = host, port = monitorPort), envir = .sparkREnv)
-    assign(".backendLaunched", 1, envir = .sparkREnv)
-#    if (rLibPath != "") {
-#      assign(".libPath", rLibPath, envir = .sparkREnv)
-#      .libPaths(c(rLibPath, .libPaths()))
-#    }
   }
 
   .sparkREnv$backendPort <- backendPort
@@ -247,8 +245,6 @@ sparkR.sparkContext <- function(
   # Set the start time to identify jobjs
   # Seconds resolution is good enough for this purpose, so use ints
   assign(".scStartTime", as.integer(Sys.time()), envir = .sparkREnv)
-
-  master = ""
 
   assign(
     ".sparkRjsc",
@@ -386,7 +382,7 @@ sparkR.session <- function(
   if (!exists(".sparkRjsc", envir = .sparkREnv)) {
     sparkExecutorEnvMap <- new.env()
     sparkR.sparkContext(master, appName, sparkHome, sparkConfigMap, sparkExecutorEnvMap,
-       sparkJars, sparkPackages)
+                        sparkJars, sparkPackages)
     stopifnot(exists(".sparkRjsc", envir = .sparkREnv))
   }
 

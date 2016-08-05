@@ -476,7 +476,8 @@ test_that("spark.als", {
                list(2, 1, 1.0), list(2, 2, 5.0))
   df <- createDataFrame(data, c("user", "item", "rating"))
   model <- spark.als(df, ratingCol = "rating", userCol = "user", itemCol = "item",
-                     rank = 10, maxIter = 5, seed = 0, reg = 0.1)
+                     rank = 10, maxIter = 5, seed = 0, reg = 0.1,
+                     numUserBlocks = 1, numItemBlocks = 1)
   stats <- summary(model)
   expect_equal(stats$rank, 10)
   test <- createDataFrame(list(list(0, 2), list(1, 0), list(2, 0)), c("user", "item"))
@@ -497,6 +498,8 @@ test_that("spark.als", {
   itemFactors <- collect(stats$itemFactors)
   userFactors2 <- collect(stats2$userFactors)
   itemFactors2 <- collect(stats2$itemFactors)
+  print(itemFactors)
+  print(itemFactors2)
   expect_equal(unlist(userFactors$features), unlist(userFactors2$features))
   expect_equal(unlist(userFactors$id), unlist(userFactors2$id))
   expect_equal(unlist(itemFactors$features), unlist(itemFactors2$features))

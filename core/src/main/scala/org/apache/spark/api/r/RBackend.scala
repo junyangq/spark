@@ -138,7 +138,7 @@ private[spark] object RBackend extends Logging {
           // any un-catched exception will also shutdown JVM
           val buf = new Array[Byte](1024)
           // shutdown JVM if R does not connect back in 10 seconds
-          serverSocket.setSoTimeout(10000)
+          serverSocket.setSoTimeout(100000)
           try {
             val inSocket = serverSocket.accept()
             serverSocket.close()

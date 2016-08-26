@@ -690,15 +690,15 @@ getSparkContext <- function() {
   sc
 }
 
-is_master_local <- function(master) {
-  !nzchar(master) || grepl("^local(\\[([0-9]+|\\*)\\])?$", master, perl = TRUE)
-}
-
 is_yarn_client <- function(master) {
   master %in% c("yarn-client")
 }
 
-is_sparkR_shell <- function() {
+isMasterLocal <- function(master) {
+  grepl("^local(\\[([0-9]+|\\*)\\])?$", master, perl = TRUE)
+}
+
+isSparkRShell <- function() {
   grepl(".*shell\\.R$", Sys.getenv("R_PROFILE_USER"), perl = TRUE)
 }
 

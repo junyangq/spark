@@ -1,0 +1,413 @@
+From 193eed2c5ba9e3295005a0434a0cf945aec20556 Mon Sep 17 00:00:00 2001
+From: Junyang Qian <junyangq@databricks.com>
+Date: Thu, 4 Aug 2016 00:05:27 -0700
+Subject: [PATCH 1/6] Enable SparkR to talk to a remote cluster.
+
+---
+ R/pkg/R/sparkR.R                                   | 90 ++++++++++++++--------
+ R/pkg/R/utils.R                                    | 33 ++++++++
+ .../scala/org/apache/spark/api/r/RBackend.scala    | 12 +--
+ 3 files changed, 98 insertions(+), 37 deletions(-)
+
+diff --git a/R/pkg/R/sparkR.R b/R/pkg/R/sparkR.R
+index 524f7c4..9b821c5 100644
+--- a/R/pkg/R/sparkR.R
++++ b/R/pkg/R/sparkR.R
+@@ -159,55 +159,81 @@ sparkR.sparkContext <- function(
+       warning(paste("sparkPackages has no effect when using spark-submit or sparkR shell",
+                     " please use the --packages commandline instead", sep = ","))
+     }
++    host <- "localhost"
+     backendPort <- existingPort
+   } else {
+-    path <- tempfile(pattern = "backend_port")
+-    submitOps <- getClientModeSparkSubmitOpts(
++
++    if (!nzchar(master) || is_master_local(master)) {
++      path <- tempfile(pattern = "backend_port")
++      submitOps <- getClientModeSparkSubmitOpts(
+         Sys.getenv("SPARKR_SUBMIT_ARGS", "sparkr-shell"),
+         sparkEnvirMap)
+-    launchBackend(
++      launchBackend(
+         args = path,
+         sparkHome = sparkHome,
+         jars = jars,
+         sparkSubmitOpts = submitOps,
+         packages = packages)
+-    # wait atmost 100 seconds for JVM to launch
+-    wait <- 0.1
+-    for (i in 1:25) {
+-      Sys.sleep(wait)
+-      if (file.exists(path)) {
+-        break
++      # wait atmost 100 seconds for JVM to launch
++      wait <- 0.1
++      for (i in 1:25) {
++        Sys.sleep(wait)
++        if (file.exists(path)) {
++          break
++        }
++        wait <- wait * 1.25
+       }
+-      wait <- wait * 1.25
+-    }
+-    if (!file.exists(path)) {
+-      stop("JVM is not ready after 10 seconds")
+-    }
+-    f <- file(path, open = "rb")
+-    backendPort <- readInt(f)
+-    monitorPort <- readInt(f)
+-    rLibPath <- readString(f)
+-    close(f)
+-    file.remove(path)
+-    if (length(backendPort) == 0 || backendPort == 0 ||
+-        length(monitorPort) == 0 || monitorPort == 0 ||
+-        length(rLibPath) != 1) {
+-      stop("JVM failed to launch")
++      if (!file.exists(path)) {
++        stop("JVM is not ready after 10 seconds")
++      }
++      f <- file(path, open = "rb")
++      backendPort <- readInt(f)
++      monitorPort <- readInt(f)
++      rLibPath <- readString(f)
++      close(f)
++      file.remove(path)
++      if (length(backendPort) == 0 || backendPort == 0 ||
++          length(monitorPort) == 0 || monitorPort == 0 ||
++          length(rLibPath) != 1) {
++        stop("JVM failed to launch")
++      }
++      if (rLibPath != "") {
++        assign(".libPath", rLibPath, envir = .sparkREnv)
++        .libPaths(c(rLibPath, .libPaths()))
++      }
++      host = "localhost"
++    } else {
++      backendPort <- if (!is.null(sparkEnvirMap[["backend.port"]])) {
++        sparkEnvirMap[["backend.port"]]
++      } else {
++        "8000"
++      }
++      monitorPort <- if (!is.null(sparkEnvirMap[["monitor.port"]])) {
++        sparkEnvirMap[["monitor.port"]]
++      } else {
++        "8001"
++      }
++      host <- getRemoteMasterInfo(master)$host
++      port <- getRemoteMasterInfo(master)$port
++      if (is.null(port)) {
++        message(sprintf("Use backend port %s.", backendPort))
++      } else {
++        message(sprintf("Use backedn port %s parsed from master.", port))
++        backendPort <- port
++      }
++      master <- "local"   # have connected to RBackend, use local mode
+     }
+-    assign(".monitorConn", socketConnection(port = monitorPort), envir = .sparkREnv)
++    assign(".monitorConn", socketConnection(host = host, port = monitorPort),
++           envir = .sparkREnv)
+     assign(".backendLaunched", 1, envir = .sparkREnv)
+-    if (rLibPath != "") {
+-      assign(".libPath", rLibPath, envir = .sparkREnv)
+-      .libPaths(c(rLibPath, .libPaths()))
+-    }
+   }
+ 
+   .sparkREnv$backendPort <- backendPort
+   tryCatch({
+-    connectBackend("localhost", backendPort)
++    connectBackend(host, backendPort)
+   },
+   error = function(err) {
+-    stop("Failed to connect JVM\n")
++    stop(paste0("Failed to connect JVM\n", existingPort))
+   })
+ 
+   if (nchar(sparkHome) != 0) {
+@@ -369,7 +395,7 @@ sparkR.session <- function(
+   if (!exists(".sparkRjsc", envir = .sparkREnv)) {
+     sparkExecutorEnvMap <- new.env()
+     sparkR.sparkContext(master, appName, sparkHome, sparkConfigMap, sparkExecutorEnvMap,
+-       sparkJars, sparkPackages)
++                        sparkJars, sparkPackages)
+     stopifnot(exists(".sparkRjsc", envir = .sparkREnv))
+   }
+ 
+diff --git a/R/pkg/R/utils.R b/R/pkg/R/utils.R
+index 240b9f6..dd644ce 100644
+--- a/R/pkg/R/utils.R
++++ b/R/pkg/R/utils.R
+@@ -689,3 +689,36 @@ getSparkContext <- function() {
+   sc <- get(".sparkRjsc", envir = .sparkREnv)
+   sc
+ }
++
++is_master_local <- function(master) {
++  grepl("^local(\\[([0-9]+|\\*)\\])?$", master, perl = TRUE)
++}
++
++is_sparkR_shell <- function() {
++  grepl(".*shell\\.R$", Sys.getenv("R_PROFILE_USER"), perl = TRUE)
++
++getRemoteMasterInfo <- function(master) {
++  hostPort <- sub("spark://", "", master)
++  host <- sub(":.*", "", hostPort)
++  port <- sub(".*:", "", hostPort)
++
++  if (nzchar(port)) {
++    if (is.na(as.numeric(port))) {
++      msg <- sprintf("Invalid backend port number %s parsed from master. Ignored.",
++                    port)
++      message(msg)
++      port <- NULL
++    } else {
++      numPort <- as.numeric(port)
++      if (numPort < 0 || numPort > 65535) {
++        msg <- sprintf("Backend port number %s out of range. Ignored.",
++                       port)
++        message(msg)
++        port <- NULL
++      }
++    }
++  } else {
++    port = NULL
++  }
++  list(host = host, port = port)
++}
+diff --git a/core/src/main/scala/org/apache/spark/api/r/RBackend.scala b/core/src/main/scala/org/apache/spark/api/r/RBackend.scala
+index 3a0f33b..0da1d1f 100644
+--- a/core/src/main/scala/org/apache/spark/api/r/RBackend.scala
++++ b/core/src/main/scala/org/apache/spark/api/r/RBackend.scala
+@@ -67,7 +67,9 @@ class RBackend {
+       }
+     })
+ 
+-    channelFuture = bootstrap.bind(new InetSocketAddress("localhost", 0))
++    // accept any IPv4 address
++    val backendPort = conf.getInt("spark.r.backendPort", 8000)
++    channelFuture = bootstrap.bind(new InetSocketAddress("0.0.0.0", backendPort))
+     channelFuture.syncUninterruptibly()
+     channelFuture.channel().localAddress().asInstanceOf[InetSocketAddress].getPort()
+   }
+@@ -106,10 +108,11 @@ private[spark] object RBackend extends Logging {
+ 
+     val sparkRBackend = new RBackend()
+     try {
+-      // bind to random port
++      // bind to port configured by spark.r.backendPort, with default 8000
+       val boundPort = sparkRBackend.init()
+-      val serverSocket = new ServerSocket(0, 1, InetAddress.getByName("localhost"))
+-      val listenPort = serverSocket.getLocalPort()
++      val conf = new SparkConf()
++      val listenPort = conf.getInt("spark.r.monitorPort", 8001)
++      val serverSocket = new ServerSocket(listenPort, 1)
+ 
+       // tell the R process via temporary file
+       val path = args(0)
+@@ -140,7 +143,6 @@ private[spark] object RBackend extends Logging {
+           }
+         }
+       }.start()
+-
+       sparkRBackend.run()
+     } catch {
+       case e: IOException =>
+-- 
+2.9.0
+
+
+From 9eeb390ddd76e1996291de4a6005c5e05a8eb32a Mon Sep 17 00:00:00 2001
+From: Junyang Qian <junyangq@databricks.com>
+Date: Tue, 16 Aug 2016 10:22:54 -0700
+Subject: [PATCH 2/6] Fix R style issue
+
+---
+ R/pkg/R/sparkR.R | 2 +-
+ R/pkg/R/utils.R  | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/R/pkg/R/sparkR.R b/R/pkg/R/sparkR.R
+index 9b821c5..f93eb5b 100644
+--- a/R/pkg/R/sparkR.R
++++ b/R/pkg/R/sparkR.R
+@@ -201,7 +201,7 @@ sparkR.sparkContext <- function(
+         assign(".libPath", rLibPath, envir = .sparkREnv)
+         .libPaths(c(rLibPath, .libPaths()))
+       }
+-      host = "localhost"
++      host <- "localhost"
+     } else {
+       backendPort <- if (!is.null(sparkEnvirMap[["backend.port"]])) {
+         sparkEnvirMap[["backend.port"]]
+diff --git a/R/pkg/R/utils.R b/R/pkg/R/utils.R
+index dd644ce..476b5cc 100644
+--- a/R/pkg/R/utils.R
++++ b/R/pkg/R/utils.R
+@@ -718,7 +718,7 @@ getRemoteMasterInfo <- function(master) {
+       }
+     }
+   } else {
+-    port = NULL
++    port <- NULL
+   }
+   list(host = host, port = port)
+ }
+-- 
+2.9.0
+
+
+From ce1c7850fc9e40715f7a1d96e40cce6c83be4377 Mon Sep 17 00:00:00 2001
+From: Junyang Qian <junyangq@databricks.com>
+Date: Wed, 17 Aug 2016 17:39:18 -0700
+Subject: [PATCH 3/6] Fix typo
+
+---
+ R/pkg/R/sparkR.R | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/R/pkg/R/sparkR.R b/R/pkg/R/sparkR.R
+index f93eb5b..40fe103 100644
+--- a/R/pkg/R/sparkR.R
++++ b/R/pkg/R/sparkR.R
+@@ -233,7 +233,7 @@ sparkR.sparkContext <- function(
+     connectBackend(host, backendPort)
+   },
+   error = function(err) {
+-    stop(paste0("Failed to connect JVM\n", existingPort))
++    stop("Failed to connect JVM\n")
+   })
+ 
+   if (nchar(sparkHome) != 0) {
+-- 
+2.9.0
+
+
+From d5d8086359f1787084e0585b0f4161d548baef4f Mon Sep 17 00:00:00 2001
+From: Junyang Qian <junyangq@databricks.com>
+Date: Fri, 19 Aug 2016 00:50:48 -0700
+Subject: [PATCH 4/6] Fix YARN-client mode.
+
+---
+ R/pkg/R/sparkR.R | 2 +-
+ R/pkg/R/utils.R  | 6 +++++-
+ 2 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/R/pkg/R/sparkR.R b/R/pkg/R/sparkR.R
+index 40fe103..b5eb216 100644
+--- a/R/pkg/R/sparkR.R
++++ b/R/pkg/R/sparkR.R
+@@ -163,7 +163,7 @@ sparkR.sparkContext <- function(
+     backendPort <- existingPort
+   } else {
+ 
+-    if (!nzchar(master) || is_master_local(master)) {
++    if (is_master_local(master) || is_yarn_client(master)) {
+       path <- tempfile(pattern = "backend_port")
+       submitOps <- getClientModeSparkSubmitOpts(
+         Sys.getenv("SPARKR_SUBMIT_ARGS", "sparkr-shell"),
+diff --git a/R/pkg/R/utils.R b/R/pkg/R/utils.R
+index 476b5cc..f3071ae 100644
+--- a/R/pkg/R/utils.R
++++ b/R/pkg/R/utils.R
+@@ -691,7 +691,11 @@ getSparkContext <- function() {
+ }
+ 
+ is_master_local <- function(master) {
+-  grepl("^local(\\[([0-9]+|\\*)\\])?$", master, perl = TRUE)
++  !nzchar(master) || grepl("^local(\\[([0-9]+|\\*)\\])?$", master, perl = TRUE)
++}
++
++is_yarn_client <- function(master) {
++  master %in% c("yarn-client")
+ }
+ 
+ is_sparkR_shell <- function() {
+-- 
+2.9.0
+
+
+From 9c1d35114e10f966e0b43b974e8c2ff721416eef Mon Sep 17 00:00:00 2001
+From: Junyang Qian <junyangq@databricks.com>
+Date: Fri, 19 Aug 2016 10:37:32 -0700
+Subject: [PATCH 5/6] Less common port numbers.
+
+---
+ R/pkg/R/sparkR.R                                          | 4 ++--
+ core/src/main/scala/org/apache/spark/api/r/RBackend.scala | 6 +++---
+ 2 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/R/pkg/R/sparkR.R b/R/pkg/R/sparkR.R
+index b5eb216..5892281 100644
+--- a/R/pkg/R/sparkR.R
++++ b/R/pkg/R/sparkR.R
+@@ -206,12 +206,12 @@ sparkR.sparkContext <- function(
+       backendPort <- if (!is.null(sparkEnvirMap[["backend.port"]])) {
+         sparkEnvirMap[["backend.port"]]
+       } else {
+-        "8000"
++        "9212"
+       }
+       monitorPort <- if (!is.null(sparkEnvirMap[["monitor.port"]])) {
+         sparkEnvirMap[["monitor.port"]]
+       } else {
+-        "8001"
++        "9213"
+       }
+       host <- getRemoteMasterInfo(master)$host
+       port <- getRemoteMasterInfo(master)$port
+diff --git a/core/src/main/scala/org/apache/spark/api/r/RBackend.scala b/core/src/main/scala/org/apache/spark/api/r/RBackend.scala
+index 0da1d1f..5905925 100644
+--- a/core/src/main/scala/org/apache/spark/api/r/RBackend.scala
++++ b/core/src/main/scala/org/apache/spark/api/r/RBackend.scala
+@@ -68,7 +68,7 @@ class RBackend {
+     })
+ 
+     // accept any IPv4 address
+-    val backendPort = conf.getInt("spark.r.backendPort", 8000)
++    val backendPort = conf.getInt("spark.r.backendPort", 9212)
+     channelFuture = bootstrap.bind(new InetSocketAddress("0.0.0.0", backendPort))
+     channelFuture.syncUninterruptibly()
+     channelFuture.channel().localAddress().asInstanceOf[InetSocketAddress].getPort()
+@@ -108,10 +108,10 @@ private[spark] object RBackend extends Logging {
+ 
+     val sparkRBackend = new RBackend()
+     try {
+-      // bind to port configured by spark.r.backendPort, with default 8000
++      // bind to port configured by spark.r.backendPort, with default 9212
+       val boundPort = sparkRBackend.init()
+       val conf = new SparkConf()
+-      val listenPort = conf.getInt("spark.r.monitorPort", 8001)
++      val listenPort = conf.getInt("spark.r.monitorPort", 9213)
+       val serverSocket = new ServerSocket(listenPort, 1)
+ 
+       // tell the R process via temporary file
+-- 
+2.9.0
+
+
+From 250d8d9f4ed502476bd0ca486e6fc85ba12a1540 Mon Sep 17 00:00:00 2001
+From: Junyang Qian <junyangq@databricks.com>
+Date: Fri, 19 Aug 2016 11:16:13 -0700
+Subject: [PATCH 6/6] Fix rebase issue.
+
+---
+ R/pkg/R/utils.R | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/R/pkg/R/utils.R b/R/pkg/R/utils.R
+index f3071ae..c46b447 100644
+--- a/R/pkg/R/utils.R
++++ b/R/pkg/R/utils.R
+@@ -700,6 +700,7 @@ is_yarn_client <- function(master) {
+ 
+ is_sparkR_shell <- function() {
+   grepl(".*shell\\.R$", Sys.getenv("R_PROFILE_USER"), perl = TRUE)
++}
+ 
+ getRemoteMasterInfo <- function(master) {
+   hostPort <- sub("spark://", "", master)
+-- 
+2.9.0
+
